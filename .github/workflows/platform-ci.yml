@@ -1,0 +1,41 @@
+name: platform-ci
+
+# Validacion de la plataforma en cada push/PR (sin credenciales de GCP):
+# secretos, formato y validez de Terraform (bootstrap + environments), scripts y backend mock.
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Escaneo de secretos (gitleaks)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 detect --source=/repo --redact --verbose --exit-code 1
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.13.0"
+      - name: terraform fmt
+        run: terraform fmt -check -recursive terraform
+      - name: terraform validate (bootstrap y environments)
+        run: |
+          for d in terraform/bootstrap terraform/environments; do
+            echo "== $d"; terraform -chdir=$d init -backend=false -input=false >/dev/null; terraform -chdir=$d validate
+          done
+      - name: Scripts (bash -n + shellcheck, nivel error)
+        run: |
+          for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
+          shellcheck -S error scripts/*.sh scripts/lib/*.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Backend mock (sintaxis)
+        run: node --check mock/server.js

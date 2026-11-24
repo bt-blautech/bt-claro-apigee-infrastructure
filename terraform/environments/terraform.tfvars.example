@@ -1,0 +1,5 @@
+project_id     = "cs-poc-6k18qfubvs1hrrde4cc8tfs"
+region         = "us-central1"
+state_bucket   = "cs-poc-6k18qfubvs1hrrde4cc8tfs-tfstate"
+mock_image_tag = "1.0.0"
+# environments = { dev = { envgroup = "eg-dev", mock_service = "mock-customers-dev", truststore = "ts-backend-dev" }, ... }

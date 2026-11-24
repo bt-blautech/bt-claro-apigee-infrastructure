@@ -1,0 +1,56 @@
+name: platform-apply
+
+# Plan/apply MANUAL de la plataforma. Requiere el secret GCP_TF_SA_KEY (SA con permisos de
+# administracion del proyecto: Apigee, red, IAM, Secret Manager, Cloud Run) y la variable
+# PROJECT_ID. Sin el secret, el job termina sin hacer nada.
+# apply exige confirmacion explicita y es la unica via (ademas de up.sh) de cambiar la plataforma.
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: "Capa"
+        type: choice
+        options: [bootstrap, environments]
+      action:
+        description: "Accion"
+        type: choice
+        options: [plan, apply]
+      confirmacion:
+        description: "Para apply escriba APLICAR-<capa> (ej. APLICAR-environments)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.GCP_TF_SA_KEY != '' }}
+      DIR: terraform/${{ inputs.layer }}
+    steps:
+      - name: Requisitos
+        run: |
+          if [[ "$HAS_KEY" != "true" ]]; then echo "::warning::sin GCP_TF_SA_KEY: plataforma gestionada con scripts/up.sh"; exit 0; fi
+          if [[ "${{ inputs.action }}" == "apply" && "${{ inputs.confirmacion }}" != "APLICAR-${{ inputs.layer }}" ]]; then
+            echo "::error::confirmacion invalida"; exit 1; fi
+      - uses: actions/checkout@v7
+        if: env.HAS_KEY == 'true'
+      - uses: google-github-actions/auth@v3
+        if: env.HAS_KEY == 'true'
+        with:
+          credentials_json: ${{ secrets.GCP_TF_SA_KEY }}
+      - uses: hashicorp/setup-terraform@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          terraform_version: "1.13.0"
+      - name: terraform ${{ inputs.action }}
+        if: env.HAS_KEY == 'true'
+        env:
+          TF_VAR_project_id: ${{ vars.PROJECT_ID }}
+          TF_VAR_state_bucket: ${{ vars.PROJECT_ID }}-tfstate
+          TF_VAR_name: ${{ vars.APIGEE_NAME }}
+        run: |
+          terraform -chdir=$DIR init -input=false -backend-config="bucket=${{ vars.PROJECT_ID }}-tfstate"
+          if [[ "${{ inputs.action }}" == "apply" ]]; then terraform -chdir=$DIR apply -input=false -auto-approve
+          else terraform -chdir=$DIR plan -input=false -no-color | tee plan.txt; fi

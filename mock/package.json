@@ -1,0 +1,8 @@
+{
+  "name": "mock-customers",
+  "version": "1.0.0",
+  "description": "Backend mock de clientes para la PoC Apigee de Claro CENAM",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=20" }
+}

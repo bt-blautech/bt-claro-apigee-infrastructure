@@ -1,0 +1,8 @@
+name         = "poc" # APIGEE_NAME: prefijo de toda la plataforma
+project_id   = "cs-poc-6k18qfubvs1hrrde4cc8tfs"
+region       = "us-central1"
+billing_type = "EVALUATION"
+environments = ["dev", "qa"]
+domain       = "" # vacio = dev.<IP>.nip.io / qa.<IP>.nip.io
+subnet_cidr  = "10.10.0.0/24" # VPC dedicada <name>-vpc
+peering_cidr = "10.20.0.0/22" # rango para Apigee

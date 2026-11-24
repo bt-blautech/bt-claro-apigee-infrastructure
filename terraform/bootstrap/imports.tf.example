@@ -1,0 +1,57 @@
+# EJEMPLO (no activo). Solo para ADOPTAR una org creada con el asistente de la consola:
+# renombrar a imports.tf, ajustar nombres y ejecutar `terraform plan` hasta ver 0 cambios.
+# En un despliegue desde cero NO se usa.
+import {
+  for_each = toset([
+    "apigee.googleapis.com", "compute.googleapis.com", "servicenetworking.googleapis.com",
+    "cloudkms.googleapis.com", "cloudresourcemanager.googleapis.com",
+  ])
+  to = google_project_service.apis[each.key]
+  id = "${var.project_id}/${each.key}"
+}
+
+import {
+  to = google_compute_global_address.apigee_range
+  id = "projects/${var.project_id}/global/addresses/${var.peering_range_name}"
+}
+
+import {
+  to = google_service_networking_connection.apigee
+  id = "projects/${var.project_id}/global/networks/${var.network}:servicenetworking.googleapis.com"
+}
+
+import {
+  to = google_apigee_organization.org
+  id = "organizations/${var.project_id}"
+}
+
+import {
+  to = google_apigee_instance.runtime
+  id = "organizations/${var.project_id}/instances/${var.instance_name}"
+}
+
+# --- Entrada por internet creada por el asistente (modo existing_mig) ---
+import {
+  to = google_compute_global_address.lb_ip[0]
+  id = "projects/${var.project_id}/global/addresses/${var.lb_names.ip}"
+}
+
+import {
+  to = google_compute_global_forwarding_rule.lb[0]
+  id = "projects/${var.project_id}/global/forwardingRules/${var.lb_names.forwarding_rule}"
+}
+
+import {
+  to = google_compute_target_https_proxy.lb[0]
+  id = "projects/${var.project_id}/global/targetHttpsProxies/${var.lb_names.https_proxy}"
+}
+
+import {
+  to = google_compute_url_map.lb[0]
+  id = "projects/${var.project_id}/global/urlMaps/${var.lb_names.url_map}"
+}
+
+import {
+  to = google_compute_managed_ssl_certificate.lb[0]
+  id = "projects/${var.project_id}/global/sslCertificates/${var.lb_names.certificate}"
+}
