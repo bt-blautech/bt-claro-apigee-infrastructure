@@ -44,6 +44,31 @@ Variables de `up.sh`: `PROJECT_ID` (obligatoria), `APIGEE_NAME`, `REGION` (`us-c
 
 Requisitos: `gcloud` (con `gcloud auth login` y `gcloud auth application-default login`), `terraform` ≥ 1.6, `gh`, `jq`, `openssl`.
 
+## Plataforma desde GitHub Actions (`platform-apply`) y ambientes adicionales
+
+`platform-apply` ejecuta lo mismo que `up.sh`, pero desde un runner. El estado queda en GCS, nunca en el runner.
+Cada plataforma es un environment de GitHub `platform-<nombre>`, con su propio proyecto, su propia llave y sus propias variables.
+
+| Plataforma | Proyecto | Ambientes | Uso |
+|---|---|---|---|
+| `principal` | proyecto de la PoC | `dev qa` | Solo `plan` antes de la sesión: el resultado debe ser "No changes" |
+| `aislada` | otro proyecto (mismo billing) | `staging prod` | `up` crea otra org de evaluación con sus ambientes, en `staging.<IP>.nip.io` y `prod.<IP>.nip.io` |
+
+**Por qué otro proyecto:** una org de evaluación admite **2 ambientes** y no se puede convertir a una org paga.
+Con más ambientes en la misma org haría falta PAYG. Además, una producción aislada en su propio proyecto y org es la práctica recomendada:
+- radio de impacto separado;
+- IAM separado;
+- llaves separadas.
+
+`up.sh` acepta `ENVIRONMENTS="staging prod"`. Con ese valor genera la lista para el bootstrap y el mapa para la capa de ambientes.
+Con el valor por defecto `dev qa`, los valores son idénticos a los actuales.
+
+`setup_github.sh` con `ENV_SCOPED=1` publica en el repo de APIs a nivel de environment (`staging`, `prod`):
+- secret `GCP_SA_KEY`;
+- variables `APIGEE_ORG`, `APIGEE_NAME`, `APIGEE_HOST` y `BACKEND_HOST`.
+
+No toca el secret ni las variables del repo (org principal). `prod` queda con required reviewers, y solo se despliega desde tags `v*`.
+
 ## Notas
 
 - La instancia de **evaluación** admite 2 ambientes adjuntos (dev y qa).

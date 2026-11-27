@@ -1,56 +1,115 @@
 name: platform-apply
 
-# Plan/apply MANUAL de la plataforma. Requiere el secret GCP_TF_SA_KEY (SA con permisos de
-# administracion del proyecto: Apigee, red, IAM, Secret Manager, Cloud Run) y la variable
-# PROJECT_ID. Sin el secret, el job termina sin hacer nada.
-# apply exige confirmacion explicita y es la unica via (ademas de up.sh) de cambiar la plataforma.
+# Plataforma completa desde GitHub Actions (lo mismo que scripts/up.sh, sin la maquina de nadie):
+#   bucket de estado -> bootstrap (org Apigee, instancia, LB/PSC, certificado, vault, SAs) -> vault ->
+#   imagen del mock -> ambientes -> validacion TLS -> (opcional) publica variables/secret en el repo de APIs.
+#
+# Cada plataforma es un environment de GitHub `platform-<nombre>` con:
+#   secret   GCP_TF_SA_KEY         llave JSON (una linea) de la SA de Terraform de ESE proyecto
+#   secret   SERVICES_REPO_TOKEN   (opcional) PAT con admin del repo de APIs, para publicar environments
+#   vars     PROJECT_ID, APIGEE_NAME, ENVIRONMENTS ("staging prod"), REGION, DOMAIN (vacio = nip.io),
+#            SERVICES_REPO (owner/repo de APIs), TERRAFORM_VERSION (opcional)
+# El estado vive en GCS (<PROJECT_ID>-tfstate, versionado y con locking): nunca en el runner.
+#
+# Regla de oro: `plan` no cambia nada (salvo crear el bucket de estado si falta). `up` exige confirmacion.
+# La plataforma `principal` (la org de la PoC con dev/qa) solo debe correrse en `plan` antes de la sesion.
 on:
   workflow_dispatch:
     inputs:
-      layer:
-        description: "Capa"
+      plataforma:
+        description: "Plataforma (environment de GitHub platform-<nombre>)"
         type: choice
-        options: [bootstrap, environments]
-      action:
-        description: "Accion"
+        options: [aislada, principal]
+      accion:
+        description: "plan = solo revisar · up = crear/actualizar (30-60 min la primera vez)"
         type: choice
-        options: [plan, apply]
+        options: [plan, up]
       confirmacion:
-        description: "Para apply escriba APLICAR-<capa> (ej. APLICAR-environments)"
+        description: "Para up: LEVANTAR-AISLADA o LEVANTAR-PRINCIPAL"
         required: false
+      publicar:
+        description: "Tras up: publicar APIGEE_ORG/HOST/secret en los environments del repo de APIs (solo aislada)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
-  terraform:
+  platform:
+    name: "Plataforma ${{ inputs.plataforma }}: ${{ inputs.accion }}"
     runs-on: ubuntu-latest
+    environment: platform-${{ inputs.plataforma }}
+    timeout-minutes: 150
+    concurrency:
+      group: platform-${{ inputs.plataforma }}
+      cancel-in-progress: false
     env:
-      HAS_KEY: ${{ secrets.GCP_TF_SA_KEY != '' }}
-      DIR: terraform/${{ inputs.layer }}
+      PLATAFORMA: ${{ inputs.plataforma }}
+      ACCION: ${{ inputs.accion }}
+      PROJECT_ID: ${{ vars.PROJECT_ID }}
+      APIGEE_NAME: ${{ vars.APIGEE_NAME }}
+      ENVIRONMENTS: ${{ vars.ENVIRONMENTS }}
+      REGION: ${{ vars.REGION || 'us-central1' }}
+      DOMAIN: ${{ vars.DOMAIN }}
     steps:
-      - name: Requisitos
+      - name: Requisitos y confirmacion
+        env:
+          HAS_KEY: ${{ secrets.GCP_TF_SA_KEY != '' }}
+          CONFIRM: ${{ inputs.confirmacion }}
         run: |
-          if [[ "$HAS_KEY" != "true" ]]; then echo "::warning::sin GCP_TF_SA_KEY: plataforma gestionada con scripts/up.sh"; exit 0; fi
-          if [[ "${{ inputs.action }}" == "apply" && "${{ inputs.confirmacion }}" != "APLICAR-${{ inputs.layer }}" ]]; then
-            echo "::error::confirmacion invalida"; exit 1; fi
+          [[ "$HAS_KEY" == "true" ]] || { echo "::error::falta el secret GCP_TF_SA_KEY en el environment platform-${PLATAFORMA}"; exit 1; }
+          [[ -n "$PROJECT_ID" && -n "$APIGEE_NAME" && -n "$ENVIRONMENTS" ]] \
+            || { echo "::error::faltan variables PROJECT_ID / APIGEE_NAME / ENVIRONMENTS en platform-${PLATAFORMA}"; exit 1; }
+          if [[ "$ACCION" == "up" && "$CONFIRM" != "LEVANTAR-${PLATAFORMA^^}" ]]; then
+            echo "::error::confirmacion invalida (esperado LEVANTAR-${PLATAFORMA^^})"; exit 1
+          fi
+          {
+            echo "### Plataforma \`${PLATAFORMA}\` · ${ACCION}"
+            echo "| Proyecto | Nombre | Ambientes | Region | Dominio |"; echo "|---|---|---|---|---|"
+            echo "| \`${PROJECT_ID}\` | ${APIGEE_NAME} | ${ENVIRONMENTS} | ${REGION} | ${DOMAIN:-<env>.<IP-del-LB>.nip.io} |"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
-        if: env.HAS_KEY == 'true'
       - uses: google-github-actions/auth@v3
-        if: env.HAS_KEY == 'true'
         with:
           credentials_json: ${{ secrets.GCP_TF_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v3
       - uses: hashicorp/setup-terraform@v4
-        if: env.HAS_KEY == 'true'
         with:
-          terraform_version: "1.13.0"
-      - name: terraform ${{ inputs.action }}
-        if: env.HAS_KEY == 'true'
-        env:
-          TF_VAR_project_id: ${{ vars.PROJECT_ID }}
-          TF_VAR_state_bucket: ${{ vars.PROJECT_ID }}-tfstate
-          TF_VAR_name: ${{ vars.APIGEE_NAME }}
+          terraform_version: ${{ vars.TERRAFORM_VERSION || '1.13.0' }}
+          terraform_wrapper: false   # los scripts leen `terraform output -json`
+      - name: "plan (bootstrap): que se crearia o cambiaria"
+        if: inputs.accion == 'plan'
         run: |
-          terraform -chdir=$DIR init -input=false -backend-config="bucket=${{ vars.PROJECT_ID }}-tfstate"
-          if [[ "${{ inputs.action }}" == "apply" ]]; then terraform -chdir=$DIR apply -input=false -auto-approve
-          else terraform -chdir=$DIR plan -input=false -no-color | tee plan.txt; fi
+          PLAN_ONLY=1 scripts/up.sh
+          {
+            echo "#### Resultado del plan"
+            echo '```'
+            grep -E '^(Plan:|No changes)|will be (created|destroyed|replaced)|must be replaced' bootstrap-plan.txt | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: inputs.accion == 'plan'
+        with:
+          name: plan-${{ inputs.plataforma }}-${{ github.run_id }}
+          path: bootstrap-plan.txt
+      - name: "up: plataforma completa (bootstrap + vault + mock + ambientes + TLS)"
+        if: inputs.accion == 'up'
+        run: |
+          scripts/up.sh
+          source scripts/lib/tf.sh
+          {
+            echo "#### Ambientes listos"
+            echo "| Ambiente | URL |"; echo "|---|---|"
+            STATE_BUCKET="${PROJECT_ID}-tfstate" tf terraform/bootstrap output -json hostnames \
+              | jq -r 'to_entries[] | "| \(.key) | https://\(.value)/v1/poc-customer/customers |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: "Publicar en el repo de APIs (environments con org, host, backend y llave)"
+        if: inputs.accion == 'up' && inputs.publicar && inputs.plataforma == 'aislada'
+        env:
+          GH_TOKEN: ${{ secrets.SERVICES_REPO_TOKEN }}
+          SERVICES_REPO: ${{ vars.SERVICES_REPO || 'bt-blautech/bt-claro-apigee-services' }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || { echo "::warning::sin SERVICES_REPO_TOKEN: ejecute setup_github.sh con ENV_SCOPED=1 a mano"; exit 0; }
+          ENV_SCOPED=1 scripts/setup_github.sh "$SERVICES_REPO"
+          echo "Environments ${ENVIRONMENTS} publicados en ${SERVICES_REPO}" >> "$GITHUB_STEP_SUMMARY"
